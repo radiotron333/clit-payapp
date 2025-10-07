@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Prosolar Italia • Pagamenti Klarna</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#0f172a;--card:#111827;--text:#e5e7eb;--muted:#9ca3af;--accent:#f39c12;--brand:#0c4372}
+    *{box-sizing:border-box;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto}
+    body{margin:0;background:linear-gradient(120deg,#0b1220,#111827);color:var(--text);display:flex;min-height:100vh;align-items:center;justify-content:center}
+    .card{width:100%;max-width:520px;background:rgba(17,24,39,.8);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.06);border-radius:18px;padding:24px;box-shadow:0 10px 40px rgba(0,0,0,.4)}
+    .logo{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+    .logo img{height:48px}
+    h1{font-size:20px;margin:0 0 12px 0;color:var(--brand)}
+    p{color:var(--muted);margin-top:0}
+    label{display:block;font-weight:600;margin:14px 0 6px}
+    input,select,button{width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.1);background:#0b1020;color:var(--text)}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .actions{display:flex;gap:10px;margin-top:16px}
+    .btn{cursor:pointer;font-weight:600;border:none}
+    .btn-primary{background:var(--accent);color:#052016}
+    .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,.12)}
+    .note{font-size:12px;color:#b3e6d6;margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <img src="/logo.png" alt="Prosolar Italia" />
+      <div>
+        <h1>Prosolar Italia – Link pagamento</h1>
+        <p>Inserisci prodotto, importo, telefono ed email del cliente. Genera e invia via WhatsApp o SMS.</p>
+      </div>
+    </div>
+
+    <form id="payForm">
+      <label>Prodotto/Descrizione</label>
+      <input id="descrizione" placeholder="Es. Kit fotovoltaico" required />
+
+      <label>Importo (€)</label>
+      <input id="importo" inputmode="decimal" placeholder="Es. 1290,00" required />
+
+      <label>Telefono cliente</label>
+      <input id="telefono" placeholder="+39 3331234567" required />
+
+      <label>Email cliente (opzionale)</label>
+      <input id="email" type="email" placeholder="cliente@email.it" />
+
+      <label>Canale invio</label>
+      <select id="canale"><option value="wa">WhatsApp</option><option value="sms">SMS</option></select>
+
+      <div class="actions">
+        <button class="btn btn-primary" type="submit">Genera e invia</button>
+        <button class="btn btn-ghost" id="copia" type="button">Copia link</button>
+      </div>
+      <div id="esito" class="note"></div>
+    </form>
+  </div>
+
+  <script>
+    async function creaCheckout(data){
+      const res = await fetch('/api/create-checkout', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(data)
+      });
+      if(!res.ok) throw new Error('Errore creazione link');
+      return await res.json();
+    }
+
+    function normTelefono(t){
+      const s=String(t).replace(/\s+/g,'').replace(/^00/,'+');
+      if(/^\d{9,11}$/.test(s)&&s.startsWith('3'))return '+39'+s;
+      if(/^\d{10,}$/.test(s)&&s.startsWith('0'))return '+39'+s;
+      return s;
+    }
+
+    const form=document.getElementById('payForm');
+    const esito=document.getElementById('esito');
+    form.addEventListener('submit',async e=>{
+      e.preventDefault();
+      esito.textContent='Creo link...';
+      const data={
+        descrizione:descrizione.value.trim(),
+        importoEuro:importo.value.trim(),
+        telefono:telefono.value.trim(),
+        email:email.value.trim()
+      };
+      try{
+        const {url}=await creaCheckout(data);
+        esito.textContent='Link creato.';
+        const msg=encodeURIComponent(`Ciao! Ti inviamo il link di pagamento PROSOLAR ITALIA per "${data.descrizione}" (€${data.importoEuro}). Puoi pagare con Klarna (3 rate) o carta: ${url}`);
+        if(canale.value==='wa'){window.location.href=`https://api.whatsapp.com/send?phone=${normTelefono(data.telefono)}&text=${msg}`;}
+        else{window.location.href=`sms:${data.telefono}&body=${msg}`;}
+        copia.onclick=async()=>{await navigator.clipboard.writeText(url);esito.textContent='Link copiato.';};
+      }catch(err){esito.textContent='Errore: '+err.message;}
+    });
+  </script>
+</body>
+</html>
