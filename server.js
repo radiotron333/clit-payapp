@@ -188,4 +188,3 @@ app.get("/admin/download-vendite", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server avviato sulla porta ${PORT} (BASE_URL=${BASE_URL})`);
 });
-app.listen(port, () => console.log(`Server avviato su http://localhost:${port}`));
