@@ -61,7 +61,7 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
       const email = sessionFull.customer_email || sessionFull.customer_details?.email || "";
 
       const now = new Date().toISOString();
-      const csvLine = `"\${now}","\${nickname}","\${descrizione}","\${importo}","\${telefono}","\${email}","\${session.id}","\${sessionFull.url || ''}"\n`;
+      const csvLine = `"${now}","${nickname}","${descrizione}","${importo}","${telefono}","${email}","${session.id}","${sessionFull.url || ''}"\n`;
       fs.appendFileSync(CSV_PATH, csvLine, { encoding: "utf8" });
 
       console.log(`Webhook: registrata session ${session.id} - ${descrizione} - €${importo}`);
@@ -113,7 +113,7 @@ app.post("/api/create-checkout", async (req, res) => {
 
     // append lightweight record (creation) — utile per ricerca veloce
     const now = new Date().toISOString();
-    const csvLine = `"\${now}","\${nickname || ""}","\${descrizione}","\${importoEuro}","\${telefono || ""}","\${email || ""}","\${session.id}","\${session.url}"\n`;
+    const csvLine = `"${now}","${nickname || ""}","${descrizione}","${importoEuro}","${telefono || ""}","${email || ""}","${session.id}","${session.url}"\n`;
     fs.appendFileSync(CSV_PATH, csvLine, { encoding: "utf8" });
 
     return res.json({ url: session.url, sessionId: session.id });
@@ -166,7 +166,7 @@ app.post("/api/register-payment", (req, res) => {
     if (!sessionId || !descrizione || !importoEuro) return res.status(400).json({ error: "Dati incompleti" });
 
     const now = new Date().toISOString();
-    const csvLine = `"\${now}","\${nickname || ""}","\${descrizione}","\${importoEuro}","\${telefono || ""}","\${email || ""}","\${sessionId}","-"\n`;
+    const csvLine = `"${now}","${nickname || ""}","${descrizione}","${importoEuro}","${telefono || ""}","${email || ""}","${sessionId}","-"\n`;
     fs.appendFileSync(CSV_PATH, csvLine, { encoding: "utf8" });
 
     return res.json({ ok: true });
@@ -176,7 +176,7 @@ app.post("/api/register-payment", (req, res) => {
   }
 });
 
-// Optional: download CSV (unprotected; if you want add auth)
+// Optional: download CSV (unprotected; se vuoi possiamo aggiungere auth)
 // uncomment and protect if needed
 /*
 app.get("/admin/download-vendite", (req, res) => {
@@ -188,3 +188,4 @@ app.get("/admin/download-vendite", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server avviato sulla porta ${PORT} (BASE_URL=${BASE_URL})`);
 });
+
