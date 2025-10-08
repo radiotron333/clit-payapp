@@ -1,6 +1,6 @@
 {
-  "name": "stripe-klarna-wa-sms",
-  "version": "1.1.0",
+  "name": "prosolar-payapp",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +10,8 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "stripe": "^16.0.0",
-    "fs-extra": "^11.2.0"
+    "fs-extra": "^11.2.0",
+    "pdfkit": "^0.13.0",
+    "nodemailer": "^6.9.3"
   }
 }
