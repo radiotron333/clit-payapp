@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Prosolar • Pagamenti</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#071026;--card:#0b1726;--text:#e6eef6;--muted:#9aa6b2;--accent:#f59e0b}
+    *{box-sizing:border-box;font-family:Inter,system-ui}
+    body{margin:0;background:linear-gradient(120deg,#071026,#0b1726);display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px;color:var(--text)}
+    .card{width:100%;max-width:720px;background:rgba(255,255,255,0.03);padding:20px;border-radius:12px;border:1px solid rgba(255,255,255,0.04)}
+    .logo{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+    .logo img{height:56px}
+    label{display:block;margin-top:12px;font-weight:600;color:var(--muted)}
+    input,select,button,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:#07182a;color:var(--text)}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .footer{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+    .btn{padding:10px;border-radius:8px;border:none;cursor:pointer}
+    .btn-primary{background:var(--accent);color:#082425;font-weight:700}
+    .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,0.06)}
+    .small{font-size:13px;color:var(--muted);margin-top:8px}
+    .info{margin-top:10px;padding:10px;border-radius:8px;background:rgba(255,255,255,0.02)}
+    .token-status{font-size:12px;color:var(--muted);margin-left:8px}
+    @media(max-width:640px){.row{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <img src="/prosolar/logo.png" alt="Prosolar" onerror="this.style.display='none'">
+      <div>
+        <h2>Pagamento Prosolar • Klarna / Carta</h2>
+        <div class="small">Compila i dati del cliente e invia il link su WhatsApp o SMS.</div>
+      </div>
+    </div>
+
+    <label for="nickname">Nickname cliente (rubrica)</label>
+    <input id="nickname" placeholder="Es. PINKO (salvato localmente)" />
+
+    <label for="prodotto">Prodotto / Descrizione</label>
+    <textarea id="prodotto" placeholder="Es. Faro esterno" rows="2"></textarea>
+
+    <div class="row">
+      <div>
+        <label for="prezzo">Prezzo (€)</label>
+        <input id="prezzo" inputmode="decimal" placeholder="Es. 199.00" />
+      </div>
+      <div>
+        <label for="telefono">Telefono cliente</label>
+        <input id="telefono" placeholder="+39 3xx..." />
+      </div>
+    </div>
+
+    <label for="email">Email cliente (opzionale per ricevuta)</label>
+    <input id="email" type="email" placeholder="cliente@example.com" />
+
+    <div style="margin-top:10px">
+      <label>Invia via</label>
+      <select id="canale"><option value="wa">WhatsApp</option><option value="sms">SMS</option></select>
+    </div>
+
+    <div class="footer">
+      <button id="invia" class="btn btn-primary">Invia pagamento</button>
+      <button id="copia" class="btn btn-ghost">Copia link</button>
+      <button id="resetNick" class="btn btn-ghost">Cancella nickname</button>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+        <button id="copyToken" class="btn btn-ghost" title="Copia il token admin negli appunti">Copia token</button>
+        <button id="clearToken" class="btn btn-ghost" title="Rimuovi token salvato">Cancella token</button>
+        <span id="tokenIndicator" class="token-status"></span>
+      </div>
+    </div>
+
+    <div id="esito" class="info small">Pronto.</div>
+
+    <hr style="margin:16px 0;border:none;border-top:1px solid rgba(255,255,255,0.03)">
+
+    <div id="area-controllo">
+      <!-- qui compariranno Controlla pagamento / iframe / registra -->
+    </div>
+  </div>
+
+<script>
+/*
+  Pagina pagamenti aggiornata - gestione ADMIN_TOKEN in localStorage (opzionale).
+  - API_BASE usa location.origin for default (if served from same server).
+  - If hosting elsewhere, change API_BASE to backend URL (e.g. 'https://prosolar-pay.onrender.com').
+*/
+const API_BASE = location.origin.replace(/\/$/,''); // change if needed
+const LS_KEY = "prosolar_clients";
+const ADMIN_LS_KEY = "prosolar_admin_token";
+
+function saveLocalContact(nick, phone, email){
+  if(!nick) return;
+  const list = JSON.parse(localStorage.getItem(LS_KEY) || "[]");
+  const idx = list.findIndex(x => x.nick && x.nick.toLowerCase() === nick.toLowerCase());
+  const rec = { nick, phone, email };
+  if(idx >= 0) list[idx] = rec; else list.push(rec);
+  localStorage.setItem(LS_KEY, JSON.stringify(list));
+}
+
+function normTelefono(t){
+  if(!t) return '';
+  let s = String(t).replace(/\s+/g,'').replace(/^00/,'+');
+  s = s.replace(/[^+0-9]/g,'');
+  if(/^3\d{8,9}$/.test(s)) return '+39' + s; // number starting with 3 (no prefix)
+  return s;
+}
+
+async function creaCheckout(descrizione, importoEuro, telefono, email, nickname){
+  const res = await fetch(API_BASE + "/api/create-checkout", {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ descrizione, importoEuro, telefono, email, nickname })
+  });
+  const data = await res.json();
+  if(!res.ok) throw new Error(data.error || data.details || 'Errore');
+  return data;
+}
+
+// token management and rest of JS...
+function getStoredAdminToken(){ return localStorage.getItem(ADMIN_LS_KEY) || null; }
+async function getAdminTokenInteractive() {
+  const stored = getStoredAdminToken();
+  if (stored) return stored;
+  const t = prompt("Inserisci il codice admin (token) per autorizzare la registrazione:");
+  if (!t) return null;
+  const remember = confirm("Vuoi che questo dispositivo ricordi il token in futuro? (non farlo su dispositivi condivisi)");
+  if (remember) localStorage.setItem(ADMIN_LS_KEY, t);
+  updateTokenIndicator();
+  return t;
+}
+function clearAdminToken(){ localStorage.removeItem(ADMIN_LS_KEY); updateTokenIndicator(); alert("Token cancellato dal dispositivo."); }
+function updateTokenIndicator(){ const el = document.getElementById('tokenIndicator'); const t = getStoredAdminToken(); el.textContent = t ? "Token salvato su dispositivo" : "Nessun token salvato"; }
+async function copyAdminTokenToClipboard(){ let token = getStoredAdminToken(); if (!token) { const t = prompt("Nessun token salvato. Inserisci il token admin da copiare negli appunti:"); if (!t) return alert("Nessun token inserito."); const remember = confirm("Vuoi che questo dispositivo ricordi il token in futuro? (non farlo su dispositivi condivisi)"); if (remember) { localStorage.setItem(ADMIN_LS_KEY, t); updateTokenIndicator(); } token = t; } try { await navigator.clipboard.writeText(token); alert("Token copiato negli appunti."); } catch (err) { console.error("Copia fallita:", err); prompt("Copia manuale token (seleziona e copia):", token); } }
+document.getElementById('invia').addEventListener('click', async () => {
+  const nick = document.getElementById('nickname').value.trim() || 'Nuovo';
+  const prod = document.getElementById('prodotto').value.trim();
+  const prezzo = document.getElementById('prezzo').value.trim();
+  const telefono = normTelefono(document.getElementById('telefono').value.trim());
+  const email = document.getElementById('email').value.trim() || undefined;
+  const canale = document.getElementById('canale').value;
+  const esito = document.getElementById('esito');
+  if(!prod || !prezzo || !telefono){ esito.textContent = 'Compila prodotto, prezzo e telefono.'; return; }
+  esito.textContent = 'Creo link...';
+  try {
+    const { url, sessionId } = await creaCheckout(prod, prezzo, telefono, email, nick);
+    saveLocalContact(nick, telefono, email);
+    esito.innerHTML = `Link creato. <a href="${url}" target="_blank">Apri Checkout</a>`;
+    const msg = encodeURIComponent(`Ciao! Ecco il link di pagamento per "${prod}" (€${prezzo}). ${url}`);
+    if(canale === 'wa') { window.location.href = `https://api.whatsapp.com/send?phone=${encodeURIComponent(telefono)}&text=${msg}`; } else { window.location.href = `sms:${encodeURIComponent(telefono)}&body=${msg}`; }
+    renderControlArea(sessionId, prod, prezzo, nick, telefono, email);
+    document.getElementById('copia').onclick = async () => { try { await navigator.clipboard.writeText(url); esito.textContent = 'Link copiato.'; } catch { esito.textContent = 'Impossibile copiare.'; } };
+  } catch(e){ console.error(e); esito.textContent = 'Errore: ' + (e.message || 'imprevisto'); }
+});
+document.getElementById('resetNick').addEventListener('click', () => { document.getElementById('nickname').value = ''; localStorage.removeItem(LS_KEY); document.getElementById('esito').textContent = 'Nick locali cancellati.'; });
+document.getElementById('copyToken').addEventListener('click', async () => { await copyAdminTokenToClipboard(); });
+document.getElementById('clearToken').addEventListener('click', () => { clearAdminToken(); });
+
+function renderControlArea(sessionId, descrizione, prezzo, nickname, telefono, email) {
+  const area = document.getElementById('area-controllo');
+  area.innerHTML = `
+    <div class="info">
+      <div><strong>Session ID:</strong> ${sessionId}</div>
+      <div style="margin-top:8px">
+        <button id="controlla" class="btn btn-ghost">Controlla pagamento</button>
+        <button id="registra" class="btn btn-ghost">Registra pagamento (se OK)</button>
+      </div>
+      <div id="stato" class="small" style="margin-top:8px"></div>
+      <div id="stripeFrame" style="margin-top:10px"></div>
+    </div>
+  `;
+
+  document.getElementById('controlla').addEventListener('click', async () => {
+    const stato = document.getElementById('stato');
+    stato.textContent = 'Controllo in corso...';
+    try {
+      const res = await fetch(`${API_BASE}/api/session-status?session_id=${encodeURIComponent(sessionId)}`);
+      const data = await res.json();
+      if(!res.ok){ stato.textContent = 'Errore: ' + (data.error || 'imprevisto'); return; }
+      stato.innerHTML = `
+        Stato sessione: <strong>${data.sessionStatus}</strong><br>
+        Stato pagamento: <strong>${data.paymentStatus || '---'}</strong><br>
+        Importo: €${data.amount} ${data.currency}<br>
+        Email cliente: ${data.customer_email || '—'}<br>
+        Nick: ${data.nickname || '—'}<br>
+        Charge ID: ${data.chargeId || '—'}
+      `;
+      const frameDiv = document.getElementById('stripeFrame');
+      frameDiv.innerHTML = '';
+      if(data.stripePaymentLink) {
+        const iframe = document.createElement('iframe');
+        iframe.src = data.stripePaymentLink;
+        iframe.width = "100%";
+        iframe.height = "500";
+        iframe.style.border = "1px solid rgba(255,255,255,0.06)";
+        frameDiv.appendChild(iframe);
+        const tools = document.createElement('div');
+        tools.style.marginTop = "8px";
+        tools.innerHTML = `<button id="refreshFrame" class="btn btn-ghost">Aggiorna iframe</button>
+                           <a id="openStripe" class="btn btn-ghost" href="${data.stripePaymentLink}" target="_blank" style="margin-left:8px">Apri su Stripe</a>`;
+        frameDiv.appendChild(tools);
+        document.getElementById('refreshFrame').onclick = () => { iframe.src = data.stripePaymentLink + '?t=' + Date.now(); };
+      } else {
+        frameDiv.innerHTML = `<div class="small">Link a Stripe non disponibile. Se pagamento effettuato, registra manualmente.</div>`;
+      }
+    } catch(err){ console.error(err); document.getElementById('stato').textContent = 'Errore: ' + (err.message || 'imprevisto'); }
+  });
+
+  document.getElementById('registra').addEventListener('click', async () => {
+    const conferma = confirm("Sei sicuro di voler registrare questo pagamento nel tuo archivio? (usa solo dopo aver verificato)");
+    if(!conferma) return;
+    const adminToken = await getAdminTokenInteractive();
+    if(!adminToken){ alert("Operazione annullata (token richiesto)."); return; }
+    const payload = {
+      sessionId,
+      nickname,
+      descrizione,
+      importoEuro: prezzo,
+      telefono,
+      email
+    };
+    try {
+      const res = await fetch(API_BASE + "/api/register-payment", {
+        method: "POST",
+        headers: { "Content-Type":"application/json", "x-admin-token": adminToken },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || "Errore");
+      document.getElementById('esito').textContent = 'Pagamento registrato con successo.';
+      document.getElementById('prodotto').value = '';
+      document.getElementById('prezzo').value = '';
+      document.getElementById('telefono').value = '';
+      document.getElementById('email').value = '';
+      document.getElementById('area-controllo').innerHTML = '';
+    } catch(err){ console.error(err); alert("Errore registrazione: " + (err.message || 'imprevisto')); }
+  });
+}
+updateTokenIndicator();
+</script>
+</body>
+</html>
