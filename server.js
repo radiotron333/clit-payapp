@@ -1,169 +1,90 @@
+// server.js
 import express from "express";
 import Stripe from "stripe";
 import dotenv from "dotenv";
 import cors from "cors";
-import fs from "fs-extra";
+import fs from "fs";
 import path from "path";
-import PDFDocument from "pdfkit";
-import nodemailer from "nodemailer";
 
 dotenv.config();
 
 const app = express();
 
-// Serve static first
+// --- Config ---
+const STRIPE_KEY = process.env.STRIPE_SECRET_KEY;
+if (!STRIPE_KEY) {
+  console.warn("ATTENZIONE: STRIPE_SECRET_KEY non impostata. Inseriscila in env vars.");
+}
+const stripe = new Stripe(STRIPE_KEY, { apiVersion: "2024-06-20" });
+
+const PORT = process.env.PORT || 3000;
+const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+const CSV_PATH = path.resolve("./vendite.csv");
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
+const STRIPE_DASHBOARD_MODE = process.env.STRIPE_DASHBOARD_MODE === "live" ? "live" : "test"; // 'test' by default
+
+// Ensure CSV exists with header
+if (!fs.existsSync(CSV_PATH)) {
+  fs.writeFileSync(CSV_PATH, "data,nickname,descrizione,importo,telefono,email,session_id,session_url\n", { encoding: "utf8" });
+}
+
+// Serve file statici
 app.use(express.static("public"));
 
-// Stripe init
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
-
-// Directories
-const PUBLIC_DIR = path.resolve("./public");
-const RECEIPTS_DIR = path.join(PUBLIC_DIR, "receipts");
-await fs.ensureDir(RECEIPTS_DIR);
-
-// CSV vendite (non persistente su alcuni host)
-const CSV_PATH = "./vendite.csv";
-if (!fs.existsSync(CSV_PATH)) {
-  fs.writeFileSync(CSV_PATH, "data,nickname,descrizione,importo,telefono,email,session_id,session_url\n");
-}
-
-// Nodemailer
-const smtpTransport = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: process.env.SMTP_SECURE === "true",
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
-  }
-});
-
-// Helper PDF
-async function createReceiptPdf({ sessionId, descrizione, importoEuro, nickname, telefono, email, paymentDate, paymentMethod }) {
-  return new Promise((resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ size: "A4", margin: 40 });
-      const chunks = [];
-      doc.on("data", (c) => chunks.push(c));
-      doc.on("end", async () => {
-        const pdfBuffer = Buffer.concat(chunks);
-        const outPath = path.join(RECEIPTS_DIR, `${sessionId}.pdf`);
-        await fs.writeFile(outPath, pdfBuffer);
-        resolve({ pdfBuffer, outPath });
-      });
-
-      doc.fontSize(18).text("Prosolar Italia - Ricevuta di pagamento", { align: "center" });
-      doc.moveDown();
-      doc.fontSize(12).text(`Data: ${paymentDate || new Date().toISOString()}`);
-      doc.text(`ID sessione: ${sessionId}`);
-      if (nickname) doc.text(`Cliente (nickname): ${nickname}`);
-      if (email) doc.text(`Email cliente: ${email}`);
-      if (telefono) doc.text(`Telefono cliente: ${telefono}`);
-      doc.moveDown();
-      doc.fontSize(14).text("Dettagli ordine");
-      doc.moveDown(0.4);
-      doc.fontSize(12).text(`Prodotto / Descrizione: ${descrizione}`);
-      doc.text(`Importo: € ${importoEuro}`);
-      if (paymentMethod) doc.text(`Metodo di pagamento: ${paymentMethod}`);
-      doc.moveDown();
-      doc.text("Grazie per aver acquistato con Prosolar Italia.", { italics: true });
-      doc.end();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-// --- Webhook endpoint (must use raw body) ---
+// --- Webhook endpoint: must parse raw body to verify signature ---
 app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  const sig = req.headers["stripe-signature"];
   let event;
   try {
-    if (process.env.STRIPE_WEBHOOK_SECRET) {
-      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    if (STRIPE_WEBHOOK_SECRET) {
+      const sig = req.headers["stripe-signature"];
+      event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
     } else {
+      // If no webhook secret set (not recommended for production), parse body
       event = JSON.parse(req.body.toString());
     }
   } catch (err) {
-    console.error("Webhook signature verification failed:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    console.error("Webhook error:", err.message);
+    return res.status(400).send(`Webhook error: ${err.message}`);
   }
 
+  // handle the event type(s) you care about
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     try {
-      // retrieve expanded session to get payment_intent and line_items
-      const sessionFull = await stripe.checkout.sessions.retrieve(session.id, { expand: ["payment_intent","line_items"] });
-      const paymentIntent = sessionFull.payment_intent;
-      const paymentMethod = paymentIntent?.payment_method_types?.[0] || (paymentIntent?.charges?.data?.[0]?.payment_method_details?.type);
-      const paymentDate = new Date((paymentIntent?.created || Date.now()) * 1000).toISOString();
-
-      // Try to get description and amount
-      let descrizione = "";
-      try { descrizione = sessionFull.line_items?.data?.[0]?.description || sessionFull.metadata?.descrizione || "Prodotto"; } catch(e){ descrizione = "Prodotto"; }
-      const importoEuro = ((sessionFull.amount_total || sessionFull.amount_subtotal) / 100).toFixed(2);
-      const customerEmail = sessionFull.customer_email || sessionFull.customer_details?.email || "";
+      // try to expand for more details
+      const sessionFull = await stripe.checkout.sessions.retrieve(session.id, { expand: ["payment_intent", "line_items"] });
+      const descrizione = sessionFull.line_items?.data?.[0]?.description || sessionFull.metadata?.descrizione || "Prodotto";
+      const importo = ((sessionFull.amount_total || sessionFull.amount_subtotal || 0) / 100).toFixed(2);
       const telefono = sessionFull.metadata?.telefono || "";
       const nickname = sessionFull.metadata?.nickname || "";
+      const email = sessionFull.customer_email || sessionFull.customer_details?.email || "";
 
-      // create PDF
-      const { pdfBuffer, outPath } = await createReceiptPdf({
-        sessionId: session.id,
-        descrizione,
-        importoEuro,
-        nickname,
-        telefono,
-        email: customerEmail,
-        paymentDate,
-        paymentMethod
-      });
+      const now = new Date().toISOString();
+      const csvLine = `"${now}","${nickname}","${descrizione}","${importo}","${telefono}","${email}","${session.id}","${sessionFull.url || ''}"\n`;
+      fs.appendFileSync(CSV_PATH, csvLine, { encoding: "utf8" });
 
-      const sellerEmail = process.env.SELLER_EMAIL;
-      const subject = `Ricevuta pagamento - Prosolar Italia - ${descrizione} - ${importoEuro}€`;
-      const text = `Pagamento ricevuto per ${descrizione} (${importoEuro}€).\nID sessione: ${session.id}`;
-      const attachments = [{ filename: `${session.id}.pdf`, content: pdfBuffer }];
-
-      // send seller email
-      if (sellerEmail && process.env.SMTP_USER) {
-        await smtpTransport.sendMail({
-          from: process.env.SMTP_FROM || process.env.SMTP_USER,
-          to: sellerEmail,
-          subject,
-          text,
-          attachments
-        });
-        console.log("Email inviata al venditore:", sellerEmail);
-      }
-
-      // send to customer
-      if (customerEmail && process.env.SMTP_USER) {
-        await smtpTransport.sendMail({
-          from: process.env.SMTP_FROM || process.env.SMTP_USER,
-          to: customerEmail,
-          subject: `Ricevuta Prosolar Italia - ${descrizione}`,
-          text: `Grazie per il pagamento. In allegato la ricevuta.\n\n${text}`,
-          attachments
-        });
-        console.log("Email inviata al cliente:", customerEmail);
-      }
-
+      console.log(`Webhook: registrata session ${session.id} - ${descrizione} - €${importo}`);
     } catch (err) {
-      console.error("Errore nel webhook handling:", err);
+      console.error("Errore gestione webhook session.completed:", err);
     }
   }
 
-  res.status(200).json({ received: true });
+  // Return a 200 to acknowledge receipt of the event
+  res.json({ received: true });
 });
 
+// After webhook route, use JSON parser for the rest endpoints
 app.use(express.json());
 app.use(cors());
 
+// --- Create Checkout Session ---
 app.post("/api/create-checkout", async (req, res) => {
   try {
     const { descrizione, importoEuro, telefono, email, nickname } = req.body;
-    if (!descrizione || !importoEuro) return res.status(400).json({ error: "Dati non validi" });
+    if (!descrizione || !importoEuro) return res.status(400).json({ error: "Dati non validi (descrizione/importo)" });
 
+    // normalize amount
     const unitAmount = Math.round(Number(String(importoEuro).replace(",", ".")) * 100);
 
     const session = await stripe.checkout.sessions.create({
@@ -186,25 +107,85 @@ app.post("/api/create-checkout", async (req, res) => {
         telefono: telefono || "",
         descrizione: descrizione || ""
       },
-      success_url: `${process.env.BASE_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.BASE_URL}/cancel.html`
+      success_url: `${BASE_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${BASE_URL}/cancel.html`
     });
 
+    // append lightweight record (creation) — utile per ricerca veloce
     const now = new Date().toISOString();
     const csvLine = `"${now}","${nickname || ""}","${descrizione}","${importoEuro}","${telefono || ""}","${email || ""}","${session.id}","${session.url}"\n`;
-    fs.appendFileSync(CSV_PATH, csvLine);
+    fs.appendFileSync(CSV_PATH, csvLine, { encoding: "utf8" });
 
     return res.json({ url: session.url, sessionId: session.id });
   } catch (err) {
-    console.error(err);
+    console.error("create-checkout error:", err);
     return res.status(500).json({ error: "Errore server", details: err?.message });
   }
 });
 
+// --- Session status endpoint (usato dalla UI) ---
+app.get("/api/session-status", async (req, res) => {
+  try {
+    const sessionId = req.query.session_id;
+    if (!sessionId) return res.status(400).json({ error: "Missing session_id" });
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ["payment_intent", "payment_intent.charges", "line_items"] });
+    const paymentIntent = session.payment_intent;
+    const charge = paymentIntent?.charges?.data?.[0];
+
+    const dashboardPrefix = "dashboard.stripe.com";
+    const modePrefix = STRIPE_DASHBOARD_MODE === "live" ? "" : "test/";
+    const stripeLink = charge ? `https://${dashboardPrefix}/${modePrefix}payments/${charge.id}` : null;
+
+    return res.json({
+      sessionStatus: session.status,                       // 'open' etc.
+      paymentStatus: paymentIntent?.status || null,       // 'succeeded' etc.
+      amount: ((session.amount_total || session.amount_subtotal || 0) / 100).toFixed(2),
+      currency: session.currency || "eur",
+      customer_email: session.customer_email || null,
+      phone: session.metadata?.telefono || null,
+      nickname: session.metadata?.nickname || null,
+      chargeId: charge?.id || null,
+      stripePaymentLink: stripeLink,
+      line_items: session.line_items?.data || []
+    });
+  } catch (err) {
+    console.error("session-status error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Register payment (manual confirmation by seller) ---
+app.post("/api/register-payment", (req, res) => {
+  try {
+    const token = req.headers["x-admin-token"] || req.body.admin_token;
+    if (!ADMIN_TOKEN) return res.status(500).json({ error: "ADMIN_TOKEN not configured on server" });
+    if (!token || token !== ADMIN_TOKEN) return res.status(401).json({ error: "Unauthorized" });
+
+    const { sessionId, nickname, descrizione, importoEuro, telefono, email } = req.body;
+    if (!sessionId || !descrizione || !importoEuro) return res.status(400).json({ error: "Dati incompleti" });
+
+    const now = new Date().toISOString();
+    const csvLine = `"${now}","${nickname || ""}","${descrizione}","${importoEuro}","${telefono || ""}","${email || ""}","${sessionId}","-"\n`;
+    fs.appendFileSync(CSV_PATH, csvLine, { encoding: "utf8" });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("register-payment error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Optional: download CSV (unprotected; se vuoi possiamo aggiungere auth)
+// uncomment and protect if needed
+/*
 app.get("/admin/download-vendite", (req, res) => {
   if (!fs.existsSync(CSV_PATH)) return res.status(404).send("Nessun CSV");
   res.download(CSV_PATH, "vendite.csv");
 });
+*/
 
-const port = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server avviato sulla porta ${PORT} (BASE_URL=${BASE_URL})`);
+});
 app.listen(port, () => console.log(`Server avviato su http://localhost:${port}`));
