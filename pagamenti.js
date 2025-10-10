@@ -3,30 +3,129 @@ const API_BASE = 'https://prosolar-pay.onrender.com'; // backend su Render
 const STRIPE_ACCOUNT_ID = 'acct_1S8IMaEwqxaMEDv2';     // il tuo account
 const STRIPE_DASHBOARD_BASE = `https://dashboard.stripe.com/${STRIPE_ACCOUNT_ID}/test`; // LIVE: togli /test
 
-// ====== UI ======
+// ====== UI refs ======
 const form = document.getElementById('payForm');
 const esito = document.getElementById('esito');
 const copia = document.getElementById('copia');
 const controlloBox = document.getElementById('controllo') || (() => {
   const d = document.createElement('div');
-  d.id = 'controllo';
-  d.className = 'note';
+  d.id = 'controllo'; d.className = 'note';
   form.insertAdjacentElement('afterend', d);
   return d;
 })();
 
-const postCreate = document.getElementById('postCreate'); // opzionale
+const postCreate = document.getElementById('postCreate');
 const btnWA = document.getElementById('sendWA');
 const btnSMS = document.getElementById('sendSMS');
 const btnOpen = document.getElementById('openNow');
 
-let lastSession = { id: null, url: null };
-let lastFormData = { descrizione: '', importo: '', telefono: '', email: '' };
+// campi form
+const elDescrizione = document.getElementById('descrizione');
+const elImporto     = document.getElementById('importo');
+const elTelefono    = document.getElementById('telefono');
+const elEmail       = document.getElementById('email');
+const elCanale      = document.getElementById('canale') || { value: 'wa' };
 
-// ====== UTILS ======
-function normTelefono(t){
-  let s = String(t || '').trim().replace(/\s+/g,'').replace(/^00/,'+');
-  if (/^3\d{8,9}$/.test(s)) s = '+39' + s; // 3xxxxxxxx -> +39...
+// ====== Local Storage (storico contatti) ======
+const LS_KEY = 'prosolar_contacts_v1'; // [{name, phone, email, lastUsed}...]
+
+function loadContacts(){
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveContacts(list){
+  try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch {}
+}
+function upsertContact({name, phone, email}){
+  if(!phone) return;
+  const list = loadContacts();
+  const norm = normalizePhone(phone);
+  const idx = list.findIndex(c => c.phone === norm);
+  const now = Date.now();
+  const entry = {
+    name: (name || '').trim(),
+    phone: norm,
+    email: (email || '').trim(),
+    lastUsed: now
+  };
+  if(idx >= 0){
+    // mantieni name/email più “ricchi”
+    entry.name = entry.name || list[idx].name || '';
+    entry.email = entry.email || list[idx].email || '';
+    list[idx] = entry;
+  } else {
+    list.push(entry);
+  }
+  // tieni solo gli ultimi 200
+  list.sort((a,b)=> b.lastUsed - a.lastUsed);
+  saveContacts(list.slice(0,200));
+}
+
+// ====== Autocomplete: datalist per telefono ed email ======
+function ensureDatalist(inputEl, id){
+  let dl = document.getElementById(id);
+  if(!dl){
+    dl = document.createElement('datalist');
+    dl.id = id;
+    document.body.appendChild(dl);
+  }
+  inputEl.setAttribute('list', id);
+  return dl;
+}
+const phoneDL = ensureDatalist(elTelefono, 'prosolar_phone_list');
+const emailDL = ensureDatalist(elEmail, 'prosolar_email_list');
+
+function refreshAutocomplete(){
+  const list = loadContacts().slice(0,50); // mostra max 50
+  phoneDL.innerHTML = '';
+  emailDL.innerHTML = '';
+  for(const c of list){
+    if(c.phone){
+      const opt = document.createElement('option');
+      opt.value = c.phone;
+      opt.label = c.name ? `${c.name} (${c.phone})` : c.phone;
+      phoneDL.appendChild(opt);
+    }
+    if(c.email){
+      const opt2 = document.createElement('option');
+      opt2.value = c.email;
+      opt2.label = c.name ? `${c.name} (${c.email})` : c.email;
+      emailDL.appendChild(opt2);
+    }
+  }
+}
+
+// ====== Mini “Rubrica (storico)” picker ======
+function injectRubricaButton(){
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Rubrica (storico)';
+  btn.className = 'btn-ghost';
+  btn.style.marginTop = '8px';
+  elTelefono.insertAdjacentElement('afterend', btn);
+
+  btn.onclick = () => {
+    const list = loadContacts();
+    if(!list.length){ alert('Nessun contatto salvato ancora.'); return; }
+    // menu semplice: prompt con elenco numerato (più veloce da implementare cross-browser)
+    const top = list.slice(0,15);
+    const lines = top.map((c,i)=> `${i+1}) ${c.name ? c.name+' — ' : ''}${c.phone}${c.email ? ' — '+c.email : ''}`).join('\n');
+    const choice = prompt(`Seleziona contatto (1-${top.length}):\n${lines}`);
+    const idx = (parseInt(choice,10) || 0) - 1;
+    if(idx >=0 && idx < top.length){
+      const c = top[idx];
+      elTelefono.value = c.phone || '';
+      elEmail.value = c.email || '';
+      // opzionale: precompila descrizione con nome se vuota
+      if(!elDescrizione.value && c.name) elDescrizione.value = c.name;
+    }
+  };
+}
+
+// ====== Utils ======
+function normalizePhone(t){
+  let s = String(t || '').trim().replace(/\s+/g,'').replace(/^00/,'+').replace(/[^+0-9]/g,'');
+  if(/^3\d{8,9}$/.test(s)) s = '+39' + s;
   return s;
 }
 
@@ -109,87 +208,82 @@ function renderControlloUI(sessionId){
   };
 }
 
-// ====== gestione rientro da Stripe/Klarna (?session_id=...) ======
+// ====== Rientro da Stripe/Klarna (?session_id=...) ======
 (function checkSessionIdFromURL(){
   const m = location.search.match(/[?&]session_id=([^&]+)/);
   if (m && m[1]) {
-    lastSession.id = decodeURIComponent(m[1]);
-    renderControlloUI(lastSession.id);
-    const doCheck = async () => { try { await getSessionStatus(lastSession.id); } catch {} };
+    const sid = decodeURIComponent(m[1]);
+    renderControlloUI(sid);
+    const doCheck = async () => { try { await getSessionStatus(sid); } catch {} };
     doCheck(); setTimeout(doCheck, 5000); setTimeout(doCheck, 15000);
   }
 })();
+
+// ====== Setup rubriche / autocomplete all'avvio ======
+refreshAutocomplete();
+injectRubricaButton();
 
 // ====== SUBMIT ======
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   esito.textContent = 'Creo il link...';
 
-  const descrizione = document.getElementById('descrizione').value.trim();
-  const importo = document.getElementById('importo').value.trim();
-  const telefono = normTelefono(document.getElementById('telefono').value.trim());
-  const email = document.getElementById('email').value.trim();
+  const descrizione = elDescrizione.value.trim();
+  const importo = elImporto.value.trim();
+  const telefono = normalizePhone(elTelefono.value.trim());
+  const email = (elEmail.value || '').trim();
 
   if (!descrizione || !importo || !telefono) {
     esito.textContent = 'Compila prodotto, prezzo e telefono.';
     return;
   }
 
-  // Pre-apri la finestra per evitare blocco popup (si aggiorna dopo la fetch)
+  // Pre-apri finestra per evitare blocco popup
   let pendingWin = null;
   try { pendingWin = window.open('', '_blank'); } catch {}
 
   try {
     const { url, sessionId } = await creaCheckout(descrizione, importo, email);
-    lastSession = { id: sessionId, url };
-    lastFormData = { descrizione, importo, telefono, email };
+
+    // salva contatto nello storico
+    upsertContact({ name: descrizione, phone: telefono, email });
+    refreshAutocomplete();
+
     esito.textContent = 'Link creato. Apro WhatsApp/SMS…';
 
-    // prepara messaggio
+    // messaggio compilato
     const msg = encodeURIComponent(
       `Ciao! Ecco il link di pagamento per "${descrizione}" (€${importo}). ` +
       `Puoi pagare con Klarna (3 rate) o carta: ${url}`
     );
 
-    // se hai i bottoni post-creazione, mostrali
+    // azioni post-creazione (se presenti nell'HTML)
     if (postCreate) postCreate.style.display = 'flex';
-    if (btnWA) btnWA.onclick = () => {
-      const wa = `https://api.whatsapp.com/send?phone=${encodeURIComponent(lastFormData.telefono)}&text=${msg}`;
-      window.open(wa, '_blank');
-    };
-    if (btnSMS) btnSMS.onclick = () => {
-      const sms = `sms:${encodeURIComponent(lastFormData.telefono)}?body=${msg}`;
-      window.open(sms, '_blank');
-    };
-    if (btnOpen) btnOpen.onclick = () => window.open(url, '_blank');
+    if (btnWA)  btnWA.onclick  = () => window.open(`https://api.whatsapp.com/send?phone=${encodeURIComponent(telefono)}&text=${msg}`, '_blank');
+    if (btnSMS) btnSMS.onclick = () => window.open(`sms:${encodeURIComponent(telefono)}?body=${msg}`, '_blank');
+    if (btnOpen)btnOpen.onclick= () => window.open(url, '_blank');
 
-    // apertura diretta (in base al canale selezionato)
-    const canale = document.getElementById('canale') ? document.getElementById('canale').value : 'wa';
+    // apertura automatica in base al canale scelto
+    const canale = elCanale.value || 'wa';
     const dest = (canale === 'wa')
       ? `https://api.whatsapp.com/send?phone=${encodeURIComponent(telefono)}&text=${msg}`
       : `sms:${encodeURIComponent(telefono)}?body=${msg}`;
 
     if (pendingWin && !pendingWin.closed) {
-      // reindirizza la finestra pre-aperta
       pendingWin.location.href = dest;
     } else {
-      // fallback
       window.open(dest, '_blank');
     }
 
-    // bottone "Copia link"
+    // copia link
     if (copia) copia.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(url);
-        esito.textContent = 'Link copiato negli appunti.';
-      } catch {
-        esito.textContent = 'Impossibile copiare (permesso negato).';
-      }
+      try { await navigator.clipboard.writeText(url); esito.textContent = 'Link copiato negli appunti.'; }
+      catch { esito.textContent = 'Impossibile copiare (permesso negato).'; }
     };
 
+    // area controllo
     renderControlloUI(sessionId);
   } catch (err) {
-    // se avevamo aperto una finestra vuota, chiudiamola per non lasciare tab bianche
     try { if (pendingWin && !pendingWin.closed) pendingWin.close(); } catch {}
     esito.textContent = 'Errore: ' + (err.message || 'imprevisto');
   }
