@@ -7,6 +7,128 @@ import fs from "fs";
 import path from "path";
 
 dotenv.config();
+import express from "express";
+import Stripe from "stripe";
+import dotenv from "dotenv";
+import cors from "cors";
+
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static("public"));
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2024-06-20"
+});
+
+// Config base
+const PORT = process.env.PORT || 3000;
+const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+// Imposta su Render per tornare alla tua pagina (es. https://www.prosolar.it/prosolarpay.html)
+const FRONTEND_SUCCESS_URL = process.env.FRONTEND_SUCCESS_URL;
+
+// Crea Checkout Session (Klarna + Carta)
+app.post("/api/create-checkout", async (req, res) => {
+  try {
+    const { descrizione, importoEuro, email, telefono, nickname } = req.body;
+
+    if (!descrizione || !importoEuro || isNaN(Number(importoEuro))) {
+      return res.status(400).json({ error: "Dati non validi" });
+    }
+
+    const unitAmount = Math.round(
+      Number(String(importoEuro).replace(",", ".")) * 100
+    );
+
+    const successTarget = FRONTEND_SUCCESS_URL || `${BASE_URL}/success.html`;
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      locale: "it",
+      payment_method_types: ["klarna", "card"],
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: "eur",
+            product_data: { name: descrizione },
+            unit_amount: unitAmount
+          }
+        }
+      ],
+      // redirect di successo verso la tua pagina con session_id in query
+      success_url: `${successTarget}?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${BASE_URL}/cancel.html`,
+      customer_email: email || undefined,
+      metadata: {
+        nickname: nickname || "",
+        telefono: telefono || "",
+        descrizione: descrizione || ""
+      }
+    });
+
+    return res.json({ url: session.url, sessionId: session.id });
+  } catch (err) {
+    console.error(err);
+    return res
+      .status(500)
+      .json({ error: "Errore server", details: err?.message });
+  }
+});
+
+// Stato sessione (usato per “Controlla pagamento”)
+app.get("/api/session-status", async (req, res) => {
+  try {
+    const sessionId = req.query.session_id;
+    if (!sessionId) return res.status(400).json({ error: "session_id mancante" });
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ["payment_intent", "payment_intent.charges.data", "payment_link"]
+    });
+
+    const paymentIntent = session.payment_intent;
+    const charge =
+      paymentIntent?.charges?.data && paymentIntent.charges.data.length
+        ? paymentIntent.charges.data[0]
+        : null;
+
+    // Provo a costruire link dashboard dettagli (se ho charge id)
+    let stripePaymentLink = null;
+    if (charge?.id && stripe._api.basePath) {
+      // Non possiamo conoscere l'account id in runtime server in modo affidabile senza Connect.
+      // Il link diretto fornito lato client rimane più affidabile. Qui lasciamo null.
+      stripePaymentLink = null;
+    }
+
+    return res.json({
+      sessionStatus: session.status,
+      paymentStatus: paymentIntent?.status || null,
+      amount: (session.amount_total || 0) / 100,
+      currency: session.currency || "eur",
+      chargeId: charge?.id || null,
+      customer_email: session.customer_details?.email || session.customer_email || null,
+      nickname: session.metadata?.nickname || null,
+      stripePaymentLink // spesso lo costruiamo lato client come fallback con la lista pagamenti
+    });
+  } catch (err) {
+    console.error(err);
+    return res
+      .status(500)
+      .json({ error: "Errore server", details: err?.message });
+  }
+});
+
+// Facoltativo: healthcheck
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Avvio server
+app.listen(PORT, () => {
+  console.log(
+    `Server avviato sulla porta ${PORT} (BASE_URL=${BASE_URL}, FRONTEND_SUCCESS_URL=${FRONTEND_SUCCESS_URL || "n/a"})`
+  );
+});
 
 const app = express();
 
