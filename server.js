@@ -1,8 +1,5 @@
 // server.js
-import express from "express";
-import Stripe from "stripe";
-import dotenv from "dotenv";
-import cors from "cors";
+
 import fs from "fs";
 import path from "path";
 
