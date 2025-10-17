@@ -9,6 +9,17 @@
 
   let paymentUrl = "";
 
+  const API_BASE = (function() {
+    try {
+      const src = document.currentScript?.src || "";
+      const u = new URL(src);
+      if (u.hostname.endsWith("onrender.com")) {
+        return u.origin;
+      }
+    } catch {}
+    return "https://clit-payapp.onrender.com";
+  })();
+
   function normPhone(num) {
     return (num || "").replace(/\D/g, "");
   }
@@ -28,7 +39,7 @@
     const canale = document.getElementById("canale").value;
 
     try {
-      const r = await fetch("https://clit-pay.onrender.com/create-link", {
+      const r = await fetch(API_BASE + "/create-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ descrizione, amount_eur: importo })
