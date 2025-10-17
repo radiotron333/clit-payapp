@@ -1,17 +1,12 @@
 {
-  "name": "prosolar-payapp",
+  "name": "clit-payapp",
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "stripe": "^16.0.0",
-    "fs-extra": "^11.2.0",
-    "pdfkit": "^0.13.0",
-    "nodemailer": "^6.9.3"
+    "stripe": "^16.0.0"
   }
 }
