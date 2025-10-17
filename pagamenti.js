@@ -8,7 +8,7 @@
  */
 
 // ====== CONFIG ======
-const API_BASE = 'https://prosolar-pay.onrender.com'; // backend Render
+const API_BASE = 'https://clit-pay.onrender.com'; // backend Render
 const STRIPE_ACCOUNT_ID = 'acct_1S8IMaEwqxaMEDv2';     // tuo account
 const STRIPE_MODE = 'test';                            // 'test' | 'live'
 const STRIPE_DASHBOARD_BASE = `https://dashboard.stripe.com/${STRIPE_ACCOUNT_ID}${STRIPE_MODE === 'test' ? '/test' : ''}`;
@@ -275,3 +275,4 @@ form.addEventListener('submit', async (e) => {
     esito.textContent = 'Errore: ' + (err.message || 'imprevisto');
   }
 });
+
